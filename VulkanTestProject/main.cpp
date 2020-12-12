@@ -7,6 +7,8 @@
 #include <glm/mat4x4.hpp>
 
 #include <iostream>
+#include <map>
+#include <optional>
 #include <vector>
 
 int main1() {
@@ -108,6 +110,26 @@ private:
 
 	void setupVkDebugMessenger();
 
+
+	struct QueueFamilyIndices
+	{
+		std::optional<uint32_t> graphicsFamily = 0;
+
+
+		bool isComplete()
+		{
+			return graphicsFamily.has_value();
+		}
+	};
+
+	QueueFamilyIndices  findQueueFamilies(VkPhysicalDevice bestCandidate);
+	int rateDeviceSuitability(VkPhysicalDevice device);
+
+
+	void pickPhysicalDevice();
+
+	void createLogicalDevice();
+
 	void initVulkan() {
 		uint32_t glfwExtensionCount = 0;
 		const char** glfwExtensions;
@@ -119,10 +141,16 @@ private:
 		// Don't need this one anymore but leaving it on the code for reference
 		//setupVkDebugMessenger();
 
+		pickPhysicalDevice();
+
+		createLogicalDevice();
+
+
 	}
 
 	void mainLoop() {
-		while (!glfwWindowShouldClose(window)) {
+		while (!glfwWindowShouldClose(window))
+		{
 			glfwPollEvents();
 		}
 	}
@@ -131,10 +159,12 @@ private:
 
 		std::cout << "Vulkan shutting down...\n";
 
-		if constexpr (enableValidationLayers)
-		{
-			//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
-		}
+		//if constexpr (enableValidationLayers)
+		//{
+		//	//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
+		//}
+
+		vkDestroyDevice(device, nullptr);
 
 		vkDestroyInstance(instance, nullptr);
 
@@ -146,6 +176,13 @@ private:
 	GLFWwindow* window;
 
 	VkInstance  instance;
+
+	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+	VkDevice device;
+
+	VkQueue graphicsQueue;
+
+
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 
@@ -251,6 +288,190 @@ void HelloTriangleApplication::setupVkDebugMessenger()
 }
 
 
+
+
+HelloTriangleApplication::QueueFamilyIndices  HelloTriangleApplication::findQueueFamilies(VkPhysicalDevice device)
+{
+	// Logic to find graphics queue family
+	QueueFamilyIndices indices;
+
+	// Logic to find queue family indices to populate struct with
+	uint32_t queueFamilyCount = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+
+	std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+	int iFam = 0;
+	for (const auto& queueFamily : queueFamilies)
+	{
+		if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+		{
+			indices.graphicsFamily = iFam;
+		}
+
+		if (indices.isComplete())
+			break;
+
+		iFam++;
+	}
+
+	return indices;
+}
+
+
+int HelloTriangleApplication::rateDeviceSuitability(VkPhysicalDevice device)
+{
+	VkPhysicalDeviceProperties deviceProperties;
+	vkGetPhysicalDeviceProperties(device, &deviceProperties);
+
+	std::cout << "Device ID [" << deviceProperties.deviceID
+		<< "] | Device name [" << deviceProperties.deviceName
+		<< "] | Vulkan version [" << deviceProperties.apiVersion
+		<< "] | Device type [" << (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? "GPU" : "Not GPU")
+		<< "]\n";
+
+	int score = 0;
+
+	// Discrete GPUs have a significant performance advantage
+	if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+	{
+		score += 1000;
+	}
+
+	// Maximum possible size of textures affects graphics quality
+	score += deviceProperties.limits.maxImageDimension2D;
+	score += (int)deviceProperties.limits.maxSamplerAnisotropy;
+	// TODO : add more here...
+
+	// List of features the application cannot live without
+
+	VkPhysicalDeviceFeatures deviceFeatures;
+	vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+	bool ok = (
+		deviceFeatures.geometryShader
+		&& deviceFeatures.tessellationShader
+		&& deviceFeatures.multiDrawIndirect
+		&& deviceFeatures.multiViewport
+		&& deviceFeatures.depthClamp
+		&& deviceFeatures.depthBiasClamp
+		&& deviceFeatures.fillModeNonSolid
+		&& deviceFeatures.samplerAnisotropy);
+
+	if constexpr (enableValidationLayers)
+	{
+		ok &= (bool)deviceFeatures.pipelineStatisticsQuery; // for Debug only
+	}
+
+	if (!ok)
+	{
+		score = 0;
+	}
+
+	// Then we want to make sure our device also has all the right queues for our needs
+	QueueFamilyIndices familyIndices = findQueueFamilies(device);
+	if (false == familyIndices.isComplete())
+		score = 0;
+
+	std::cout << "Device score: " << score << std::endl;
+
+	return score;
+}
+
+void HelloTriangleApplication::pickPhysicalDevice()
+{
+	uint32_t deviceCount = 0;
+	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+	// If there are 0 devices with Vulkan support then there is no point going further.
+	assert(deviceCount > 0);
+
+	// Now of all available devices pick the best one.
+	std::cout << "Selecting appropriate Vulkan device...\n";
+
+	std::vector<VkPhysicalDevice> devices(deviceCount);
+	vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+	VkPhysicalDevice bestCandidate = VK_NULL_HANDLE;
+	int bestCandidateScore = 0;
+	int bestCandidateIndex = 0;
+	int devIndex = 0;
+
+	for (const auto& device : devices)
+	{
+		std::cout << "Device " << devIndex << ":\n";
+
+		int score = rateDeviceSuitability(device);
+		if (bestCandidateScore < score)
+		{
+			bestCandidate = device;
+			bestCandidateScore = score;
+			bestCandidateIndex = devIndex;
+		}
+		devIndex++;
+	}
+
+	// Check if the best candidate is suitable at all
+	assert(bestCandidateScore > 0);
+
+	physicalDevice = bestCandidate;
+
+	std::cout << "Picked device " << bestCandidateIndex << std::endl;
+
+	findQueueFamilies(bestCandidate);
+
+	assert(physicalDevice != VK_NULL_HANDLE);
+}
+
+
+void HelloTriangleApplication::createLogicalDevice()
+{
+	// TODO improvement : use findQueueFamilies only once... store that information somewhere from when we picked the device
+	QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+
+	VkDeviceQueueCreateInfo queueCreateInfo{};
+	queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
+	queueCreateInfo.queueCount = 1;
+
+	float queuePriority = 1.0f;
+	queueCreateInfo.pQueuePriorities = &queuePriority;
+
+	// Fill here all the device features we want. TODO : refactor that with the rateDeviceSuitability function!
+	VkPhysicalDeviceFeatures deviceFeatures{};
+	deviceFeatures.geometryShader = true;
+	deviceFeatures.tessellationShader = true;
+	deviceFeatures.multiDrawIndirect = true;
+	deviceFeatures.multiViewport = true;
+	deviceFeatures.depthClamp = true;
+	deviceFeatures.depthBiasClamp = true;
+	deviceFeatures.fillModeNonSolid = true;
+	deviceFeatures.samplerAnisotropy = true;
+
+	VkDeviceCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	createInfo.pQueueCreateInfos = &queueCreateInfo;
+	createInfo.queueCreateInfoCount = 1;
+
+	createInfo.pEnabledFeatures = &deviceFeatures;
+	createInfo.enabledExtensionCount = 0;
+
+	createInfo.enabledLayerCount = 0;
+	if constexpr (enableValidationLayers)
+	{
+		createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+		createInfo.ppEnabledLayerNames = validationLayers.data();
+	}
+
+	bool ok = vkCreateDevice(physicalDevice, &createInfo, nullptr, &device);
+	assert(ok == VK_SUCCESS);
+
+	vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
+
+}
+
+
 void HelloTriangleApplication::createInstance(const char** glfwExtensions, uint32_t glfwExtensionCount)
 {
 	VkApplicationInfo appInfo{};
@@ -306,7 +527,7 @@ void HelloTriangleApplication::checkExtensions(const char** glfwExtensions, uint
 
 	bool allNeededExtensionsAvailable = true; // start optimistic
 	std::vector<const char*> glfwExtensionsVec(glfwExtensionCount);
-	for (int iExt = 0; iExt < glfwExtensionCount; iExt++)
+	for (auto iExt = 0u; iExt < glfwExtensionCount; iExt++)
 	{
 		glfwExtensionsVec[iExt] = glfwExtensions[iExt];
 	}
