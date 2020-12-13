@@ -154,8 +154,11 @@ private:
 	void					createSwapChain();
 	void					retrieveSwapChainImages(uint32_t imageCount);
 
-	void initVulkan();
+	void					createImageViews();
 
+	void					createGraphicsPipeline();
+
+	void initVulkan();
 
 	void mainLoop();
 
@@ -178,6 +181,8 @@ private:
 	VkSwapchainKHR swapChain;
 
 	std::vector<VkImage> swapChainImages;
+	std::vector<VkImageView> swapChainImageViews;
+
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
 
@@ -739,6 +744,54 @@ void HelloTriangleApplication::retrieveSwapChainImages(uint32_t imageCount)
 }
 
 
+void HelloTriangleApplication::createImageViews()
+{
+	swapChainImageViews.resize(swapChainImages.size());
+
+	int imgIndex = 0;
+
+	for (VkImage& swapImage : swapChainImages)
+	{
+		VkImageViewCreateInfo createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		createInfo.image = swapImage;
+
+		createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		createInfo.format = swapChainImageFormat;
+
+		createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+		// The subresourceRange field describes what the image's purpose is
+		// and which part of the image should be accessed.
+		// Our images will be used as color targets without any mipmapping levels or multiple layers.
+		createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		createInfo.subresourceRange.baseMipLevel = 0;
+		createInfo.subresourceRange.levelCount = 1;
+
+		// If you were working on a stereographic 3D application,
+		// then you would create a swap chain with multiple layers.
+		// You could then create multiple image views for each image
+		// representing the views for the left and right eyes by accessing different layers.
+		createInfo.subresourceRange.baseArrayLayer = 0;
+		createInfo.subresourceRange.layerCount = 1;
+
+		VkResult ok = vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[imgIndex]);
+		assert(ok == VK_SUCCESS);
+
+		imgIndex++;
+	}
+}
+
+
+void HelloTriangleApplication::createGraphicsPipeline()
+{
+
+}
+
+
 void HelloTriangleApplication::initVulkan()
 {
 	uint32_t glfwExtensionCount = 0;
@@ -759,6 +812,10 @@ void HelloTriangleApplication::initVulkan()
 	createLogicalDevice();
 
 	createSwapChain();
+
+	createImageViews();
+
+
 }
 
 void HelloTriangleApplication::mainLoop()
@@ -777,6 +834,11 @@ void HelloTriangleApplication::cleanup()
 	//{
 	//	//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 	//}
+
+	for (auto imageView : swapChainImageViews)
+	{
+		vkDestroyImageView(device, imageView, nullptr);
+	}
 
 	vkDestroySwapchainKHR(device, swapChain, nullptr);
 
