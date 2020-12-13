@@ -3,6 +3,7 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <fstream>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
@@ -158,12 +159,16 @@ private:
 
 	void					createGraphicsPipeline();
 
+
+	VkShaderModule createShaderModule(const std::vector<char>& bytecode);
+
 	void initVulkan();
 
 	void mainLoop();
 
 	void cleanup();
 
+	static std::vector<char> readFile(const std::string& filename);
 
 	GLFWwindow* window;
 
@@ -186,6 +191,9 @@ private:
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
 
+	VkShaderModule vertShaderModule;
+
+	VkShaderModule fragShaderModule;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
@@ -788,7 +796,41 @@ void HelloTriangleApplication::createImageViews()
 
 void HelloTriangleApplication::createGraphicsPipeline()
 {
+	auto vertShaderCode = readFile("vert.spv");
+	vertShaderModule = createShaderModule(vertShaderCode);
 
+	VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+	vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+	vertShaderStageInfo.module = vertShaderModule;
+	vertShaderStageInfo.pName = "main";
+
+	auto fragShaderCode = readFile("frag.spv");
+	fragShaderModule = createShaderModule(fragShaderCode);
+
+	VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	fragShaderStageInfo.module = fragShaderModule;
+	fragShaderStageInfo.pName = "main";
+
+	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+}
+
+
+VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<char>& bytecode)
+{
+	VkShaderModuleCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	createInfo.codeSize = bytecode.size();
+	createInfo.pCode = reinterpret_cast<const uint32_t*>(bytecode.data());
+
+	VkShaderModule shaderModule;
+	VkResult ok = vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule);
+	assert(ok == VK_SUCCESS);
+
+	return shaderModule;
 }
 
 
@@ -815,7 +857,7 @@ void HelloTriangleApplication::initVulkan()
 
 	createImageViews();
 
-
+	createGraphicsPipeline();
 }
 
 void HelloTriangleApplication::mainLoop()
@@ -835,6 +877,9 @@ void HelloTriangleApplication::cleanup()
 	//	//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 	//}
 
+	vkDestroyShaderModule(device, fragShaderModule, nullptr);
+	vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
 	for (auto imageView : swapChainImageViews)
 	{
 		vkDestroyImageView(device, imageView, nullptr);
@@ -851,6 +896,23 @@ void HelloTriangleApplication::cleanup()
 	glfwDestroyWindow(window);
 
 	glfwTerminate();
+}
+
+
+std::vector<char> HelloTriangleApplication::readFile(const std::string& filename)
+{
+	// The advantage of starting to read at the end of the file is that we can use the read position to determine the size of the file and allocate a buffer
+	// Only works with binary flag to avoid text transformations.
+	std::ifstream file(filename, std::ios::ate | std::ios::binary);
+	assert(file.is_open());
+
+	size_t fileSize = (size_t)file.tellg();
+	std::vector<char> buffer(fileSize);
+	// After that, we can seek back to the beginning of the file and read all of the bytes at once:
+	file.seekg(0);
+	file.read(buffer.data(), fileSize);
+
+	return buffer;
 }
 
 
