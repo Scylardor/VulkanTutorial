@@ -162,11 +162,13 @@ private:
 
 	void createFramebuffers();
 
+	void createCommandPool();
 
 	VkShaderModule	createShaderModule(const std::vector<char>& bytecode);
 
 	void	createRenderPass();
 
+	void createCommandBuffers();
 	void initVulkan();
 
 	void mainLoop();
@@ -206,6 +208,12 @@ private:
 	VkPipeline graphicsPipeline;
 
 	std::vector<VkFramebuffer> swapChainFramebuffers;
+
+	std::vector<VkCommandBuffer> commandBuffers;
+
+
+
+	VkCommandPool commandPool;
 
 
 	VkDebugUtilsMessengerEXT debugMessenger;
@@ -999,6 +1007,29 @@ void HelloTriangleApplication::createFramebuffers()
 }
 
 
+void HelloTriangleApplication::createCommandPool()
+{
+	// TODO : refactor to avoid having to recall that each time
+	QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+	// Command buffers are executed by submitting them on one of the device queues, like the graphics and presentation queues we retrieved.
+	// Each command pool can only allocate command buffers that are submitted on a single type of queue.
+	// We're going to record commands for drawing, which is why we've chosen the graphics queue family.
+	VkCommandPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+
+	// We will only record the command buffers at the beginning of the program
+	// and then execute them many times in the main loop, so we're not going to use either of these flags.
+	poolInfo.flags = 0; // Optional
+
+	VkResult ok = vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool);
+	assert(ok == VK_SUCCESS);
+
+
+}
+
+
 VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<char>& bytecode)
 {
 	VkShaderModuleCreateInfo createInfo{};
@@ -1064,6 +1095,63 @@ void HelloTriangleApplication::createRenderPass()
 }
 
 
+void HelloTriangleApplication::createCommandBuffers()
+{
+	commandBuffers.resize(swapChainFramebuffers.size());
+
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.commandPool = commandPool;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // We won't make use of the secondary command buffer functionality here
+	allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
+
+	VkResult ok = vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data());
+	assert(ok == VK_SUCCESS);
+
+	for (size_t i = 0; i < commandBuffers.size(); i++)
+	{
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = 0; // Optional
+		beginInfo.pInheritanceInfo = nullptr; // Optional
+
+		VkResult ok = vkBeginCommandBuffer(commandBuffers[i], &beginInfo);
+		assert(ok == VK_SUCCESS);
+
+		VkRenderPassBeginInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = renderPass;
+		renderPassInfo.framebuffer = swapChainFramebuffers[i];
+
+		renderPassInfo.renderArea.offset = { 0, 0 };
+		renderPassInfo.renderArea.extent = swapChainExtent;
+
+		//  the clear values to use for VK_ATTACHMENT_LOAD_OP_CLEAR
+		VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+		renderPassInfo.clearValueCount = 1;
+		renderPassInfo.pClearValues = &clearColor;
+
+		vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo,
+			//  The render pass commands will be embedded in the primary command buffer itself and no secondary command buffers will be executed.
+			VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+		vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+
+		vkCmdEndRenderPass(commandBuffers[i]);
+
+		ok = vkEndCommandBuffer(commandBuffers[i]);
+		assert(ok == VK_SUCCESS);
+
+
+	}
+
+
+
+}
+
+
 void HelloTriangleApplication::initVulkan()
 {
 	uint32_t glfwExtensionCount = 0;
@@ -1092,6 +1180,10 @@ void HelloTriangleApplication::initVulkan()
 	createGraphicsPipeline();
 
 	createFramebuffers();
+
+	createCommandPool();
+
+	createCommandBuffers();
 }
 
 void HelloTriangleApplication::mainLoop()
@@ -1110,6 +1202,8 @@ void HelloTriangleApplication::cleanup()
 	//{
 	//	//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 	//}
+
+	vkDestroyCommandPool(device, commandPool, nullptr);
 
 	for (auto framebuffer : swapChainFramebuffers)
 	{
