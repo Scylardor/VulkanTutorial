@@ -3,6 +3,7 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <array>
 #include <fstream>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
@@ -160,7 +161,9 @@ private:
 	void					createGraphicsPipeline();
 
 
-	VkShaderModule createShaderModule(const std::vector<char>& bytecode);
+	VkShaderModule	createShaderModule(const std::vector<char>& bytecode);
+
+	void	createRenderPass();
 
 	void initVulkan();
 
@@ -194,6 +197,10 @@ private:
 	VkShaderModule vertShaderModule;
 
 	VkShaderModule fragShaderModule;
+
+	VkRenderPass renderPass;
+	VkPipelineLayout pipelineLayout;
+
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
@@ -816,6 +823,121 @@ void HelloTriangleApplication::createGraphicsPipeline()
 
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
+
+	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInputInfo.vertexBindingDescriptionCount = 0;
+	vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
+	vertexInputInfo.vertexAttributeDescriptionCount = 0;
+	vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+	// we want to use a viewport that covers the entire framebuffer :
+	VkViewport viewport{};
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = (float)swapChainExtent.width;
+	viewport.height = (float)swapChainExtent.height;
+	viewport.minDepth = 0.0f; // In VK, normalized depth is [0;1] like in D3D, but this can be changed here.
+	viewport.maxDepth = 1.0f;
+
+	// we simply want to draw to the entire framebuffer, so we'll specify a scissor rectangle that covers it entirely:
+	VkRect2D scissor{};
+	scissor.offset = { 0, 0 };
+	scissor.extent = swapChainExtent;
+
+	VkPipelineViewportStateCreateInfo viewportState{};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.pViewports = &viewport;
+	viewportState.scissorCount = 1;
+	viewportState.pScissors = &scissor;
+
+	// If depthClampEnable = VK_TRUE, fragments that are beyond the near and far planes are clamped
+	// to them as opposed to discarding them. This is useful in some special cases like shadow maps.
+	VkPipelineRasterizationStateCreateInfo rasterizer{};
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = VK_FALSE;
+
+	// if rasterizerDiscardEnable = true, geometry never passes through the rasterizer stage. This basically disables any output to the framebuffer.
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+
+	// display full poygons (use VK_POLYGON_MODE_LINE for wireframe, VK_POLYGON_MODE_POINT for point cloud)
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+
+	// thickness of lines in terms of fragments.
+	rasterizer.lineWidth = 1.0f;
+
+	// Activate back-face culling and use clockwise order to determine what is the front face.
+	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+	rasterizer.depthBiasEnable = VK_FALSE;
+	rasterizer.depthBiasConstantFactor = 0.0f; // Optional
+	rasterizer.depthBiasClamp = 0.0f; // Optional
+	rasterizer.depthBiasSlopeFactor = 0.0f; // Optional
+
+	// Let's keep MSAA disabled for now
+	VkPipelineMultisampleStateCreateInfo multisampling{};
+	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.sampleShadingEnable = VK_FALSE;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisampling.minSampleShading = 1.0f; // Optional
+	multisampling.pSampleMask = nullptr; // Optional
+	multisampling.alphaToCoverageEnable = VK_FALSE; // Optional
+	multisampling.alphaToOneEnable = VK_FALSE; // Optional
+
+	// Add depth and stencil configuration later here...
+
+	// Use alpha blending mode for now
+	VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	colorBlendAttachment.blendEnable = VK_TRUE;
+	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending{};
+	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.logicOpEnable = VK_FALSE;
+	colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.blendConstants[0] = 0.0f; // Optional
+	colorBlending.blendConstants[1] = 0.0f; // Optional
+	colorBlending.blendConstants[2] = 0.0f; // Optional
+	colorBlending.blendConstants[3] = 0.0f; // Optional
+
+
+	// A limited amount of the state that we've specified in the previous structs can actually be changed without recreating the pipeline.
+	// Examples are the size of the viewport, line width and blend constants.
+	std::array<VkDynamicState, 2> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_LINE_WIDTH
+	};
+
+	VkPipelineDynamicStateCreateInfo dynamicState{};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount = (uint32_t) dynamicStates.size();
+	dynamicState.pDynamicStates = dynamicStates.data();
+
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 0; // Optional
+	pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
+	pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+
+	VkResult ok = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+	assert(ok == VK_SUCCESS);
+
 }
 
 
@@ -831,6 +953,56 @@ VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<ch
 	assert(ok == VK_SUCCESS);
 
 	return shaderModule;
+}
+
+
+void HelloTriangleApplication::createRenderPass()
+{
+	VkAttachmentDescription colorAttachment{};
+	colorAttachment.format = swapChainImageFormat;
+	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // not doing anything with MSAA yet so sticking to one sample
+
+	// clear the framebuffer to black before drawing a new frame.
+	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+	// Rendered contents will be stored in memory and can be read later
+	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+	// Our application won't do anything with the stencil buffer, so the results of loading and storing are irrelevant.
+	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+	// means that we don't care what previous layout the image was in.
+	// doesn't matter since we're going to clear it anyway.
+	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	// We want the image to be ready for presentation using the swap chain after rendering
+	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+
+	VkAttachmentReference colorAttachmentRef{};
+	colorAttachmentRef.attachment = 0;
+	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription subpass{};
+	// Vulkan may also support compute subpasses in the future, so we have to be explicit about this being a graphics subpass.
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &colorAttachmentRef;
+
+	VkRenderPassCreateInfo renderPassInfo{};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	renderPassInfo.attachmentCount = 1;
+	renderPassInfo.pAttachments = &colorAttachment;
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpass;
+
+	VkResult ok = vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass);
+	assert(ok == VK_SUCCESS);
+
+
+
+
 }
 
 
@@ -857,6 +1029,8 @@ void HelloTriangleApplication::initVulkan()
 
 	createImageViews();
 
+	createRenderPass();
+
 	createGraphicsPipeline();
 }
 
@@ -876,6 +1050,9 @@ void HelloTriangleApplication::cleanup()
 	//{
 	//	//DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 	//}
+
+	vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+	vkDestroyRenderPass(device, renderPass, nullptr);
 
 	vkDestroyShaderModule(device, fragShaderModule, nullptr);
 	vkDestroyShaderModule(device, vertShaderModule, nullptr);
