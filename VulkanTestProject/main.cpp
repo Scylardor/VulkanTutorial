@@ -173,6 +173,10 @@ private:
 
 	void createCommandBuffers();
 	void createSyncObjects();
+
+	void recreateSwapChain();
+	void cleanupSwapChain();
+
 	void initVulkan();
 
 	void drawFrame();
@@ -181,6 +185,9 @@ private:
 	void cleanup();
 
 	static std::vector<char> readFile(const std::string& filename);
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+
 
 	GLFWwindow* window;
 
@@ -225,6 +232,9 @@ private:
 
 	size_t currentFrame = 0;
 
+	bool framebufferResized = false;
+	bool minimized = false;
+
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
 
@@ -236,11 +246,12 @@ void HelloTriangleApplication::initWindow()
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
+	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
 	window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
 
+	glfwSetWindowUserPointer(window, this);
+	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
 }
 
@@ -1203,6 +1214,63 @@ void HelloTriangleApplication::createSyncObjects()
 }
 
 
+void HelloTriangleApplication::recreateSwapChain()
+{
+	// TODO: This minimization-catching trick is ugly as hell ! To refactor !
+	int width = 0, height = 0;
+	glfwGetFramebufferSize(window, &width, &height);
+	while (width == 0 || height == 0)
+	{
+		glfwGetFramebufferSize(window, &width, &height);
+		glfwWaitEvents();
+	}
+
+	vkDeviceWaitIdle(device);
+
+	cleanupSwapChain();
+
+	createSwapChain();
+	createImageViews();
+	createRenderPass();
+	createGraphicsPipeline();
+	createFramebuffers();
+	createCommandBuffers();
+
+	if (framebufferResized)
+	{
+		framebufferResized = false; // we took care of the resizing.
+	}
+}
+
+void HelloTriangleApplication::cleanupSwapChain()
+{
+	for (size_t i = 0; i < swapChainFramebuffers.size(); i++)
+	{
+		vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
+	}
+
+	// We could recreate the command pool from scratch, but that is rather wasteful.
+	// Instead, clean up the existing command buffers with vkFreeCommandBuffers.
+	// This way we can reuse the existing pool to allocate the new command buffers.
+	vkFreeCommandBuffers(device, commandPool, static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+
+
+	vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	vkDestroyShaderModule(device, fragShaderModule, nullptr);
+
+	vkDestroyPipeline(device, graphicsPipeline, nullptr);
+	vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+	vkDestroyRenderPass(device, renderPass, nullptr);
+
+	for (size_t i = 0; i < swapChainImageViews.size(); i++)
+	{
+		vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+	}
+
+	vkDestroySwapchainKHR(device, swapChain, nullptr);
+}
+
+
 void HelloTriangleApplication::initVulkan()
 {
 	uint32_t glfwExtensionCount = 0;
@@ -1245,7 +1313,20 @@ void HelloTriangleApplication::drawFrame()
 	vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
 	uint32_t imageIndex;
-	vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+	VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+	// If the swap chain turns out to be out of date when attempting to acquire an image, then it is no longer possible to present to it.
+	// Therefore we should immediately recreate the swap chain and try again in the next drawFrame call.
+	if (result == VK_ERROR_OUT_OF_DATE_KHR)
+	{
+		std::cout << "Swap chain out of date - recreation in progress\n";
+		recreateSwapChain();
+		return;
+	}
+	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) // don't manage subobtimal here because we successfully acquired the image : do it after present
+	{
+		assert(false);
+	}
 
 	// Check if a previous frame is using this image (i.e. there is its fence to wait on)
 	if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
@@ -1292,8 +1373,21 @@ void HelloTriangleApplication::drawFrame()
 	// because you can simply use the return value of the present function.
 	presentInfo.pResults = nullptr; // Optional
 
-	vkQueuePresentKHR(presentQueue, &presentInfo);
-	//assert(ok == VK_SUCCESS);
+	result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+	// The vkQueuePresentKHR function returns the same values than vkAcquireNextImageKHR with the same meaning.
+	// In this case we will also recreate the swap chain if it is suboptimal, because we want the best possible result.
+	// Regarding framebuffer resized : It is important to check this after vkQueuePresentKHR,
+	// to ensure the semaphores are in a consistent state, otherwise a signalled semaphore may never be properly waited upon.
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized)
+	{
+  		std::cout << "Swap chain out of date or suboptimal - recreation in progress\n";
+		recreateSwapChain();
+	}
+	else
+	{
+		assert(result == VK_SUCCESS);
+	}
 
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
@@ -1304,8 +1398,16 @@ void HelloTriangleApplication::mainLoop()
 {
 	while (!glfwWindowShouldClose(window))
 	{
-		glfwPollEvents();
-		drawFrame();
+		if (minimized)
+		{
+			glfwWaitEvents();
+		}
+		else
+		{
+			glfwPollEvents();
+			drawFrame();
+		}
+
 	}
 
 }
@@ -1317,6 +1419,8 @@ void HelloTriangleApplication::cleanup()
 	// Wait for the device to be idle to ensure I don't destroy resources while queues have pending work.
 	vkDeviceWaitIdle(device);
 
+	cleanupSwapChain();
+
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
@@ -1325,25 +1429,6 @@ void HelloTriangleApplication::cleanup()
 	}
 
 	vkDestroyCommandPool(device, commandPool, nullptr);
-
-	for (auto framebuffer : swapChainFramebuffers)
-	{
-		vkDestroyFramebuffer(device, framebuffer, nullptr);
-	}
-
-	vkDestroyPipeline(device, graphicsPipeline, nullptr);
-	vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-	vkDestroyRenderPass(device, renderPass, nullptr);
-
-	vkDestroyShaderModule(device, fragShaderModule, nullptr);
-	vkDestroyShaderModule(device, vertShaderModule, nullptr);
-
-	for (auto imageView : swapChainImageViews)
-	{
-		vkDestroyImageView(device, imageView, nullptr);
-	}
-
-	vkDestroySwapchainKHR(device, swapChain, nullptr);
 
 	vkDestroySurfaceKHR(instance, surface, nullptr);
 
@@ -1371,6 +1456,23 @@ std::vector<char> HelloTriangleApplication::readFile(const std::string& filename
 	file.read(buffer.data(), fileSize);
 
 	return buffer;
+}
+
+
+void HelloTriangleApplication::framebufferResizeCallback(GLFWwindow* window, int width, int height)
+{
+	auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+
+	if (width == 0 && height == 0) // Minimized ? Stop everything and wait to be given a good size...
+	{
+		app->minimized = true;
+	}
+	else
+	{
+		app->framebufferResized = true;
+		app->minimized = false;
+	}
+
 }
 
 
