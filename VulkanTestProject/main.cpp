@@ -7,6 +7,7 @@
 #include <fstream>
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/glm.hpp>
 
 #include <iostream>
 #include <map>
@@ -50,6 +51,41 @@ int main1() {
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+
+struct Vertex
+{
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	static VkVertexInputBindingDescription getBindingDescription()
+	{
+		VkVertexInputBindingDescription bindingDescription{};
+		bindingDescription.binding = 0;
+		bindingDescription.stride = sizeof(Vertex);
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+		return bindingDescription;
+	}
+
+
+	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+
+		attributeDescriptions[0].binding = 0;
+		attributeDescriptions[0].location = 0;
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+		return attributeDescriptions;
+	}
+};
+
 
 const std::vector<const char*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation"
@@ -150,6 +186,8 @@ private:
 	};
 	SwapChainSupportDetails	querySwapChainSupport(VkPhysicalDevice device);
 
+	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
 	VkSurfaceFormatKHR		chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
 
 	VkPresentModeKHR		chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -168,6 +206,9 @@ private:
 	void createCommandPool();
 
 	VkShaderModule	createShaderModule(const std::vector<char>& bytecode);
+
+	void createVertexBuffer();
+
 
 	void	createRenderPass();
 
@@ -234,6 +275,16 @@ private:
 
 	bool framebufferResized = false;
 	bool minimized = false;
+
+	const std::vector<Vertex> vertices =
+	{
+		{{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+		{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+		{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+	};
+
+	VkBuffer vertexBuffer;
+	VkDeviceMemory vertexBufferMemory;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
@@ -858,12 +909,15 @@ void HelloTriangleApplication::createGraphicsPipeline()
 	VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
 
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInputInfo.vertexBindingDescriptionCount = 0;
-	vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-	vertexInputInfo.vertexAttributeDescriptionCount = 0;
-	vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -1065,6 +1119,75 @@ VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<ch
 }
 
 
+void HelloTriangleApplication::createVertexBuffer()
+{
+	VkBufferCreateInfo bufferInfo{};
+	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+	// Just like the images in the swap chain, buffers can also be owned by a specific queue family
+	// or be shared between multiple at the same time.
+	// The buffer will only be used from the graphics queue, so we can stick to exclusive access.
+	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+	bufferInfo.flags = 0; //  used to configure sparse buffer memory, which is not relevant right now.
+
+	VkResult ok = vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer);
+	assert(ok == VK_SUCCESS);
+
+	VkMemoryRequirements memRequirements;
+	vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+	VkMemoryAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = memRequirements.size;
+	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	ok = vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory);
+	assert(ok == VK_SUCCESS);
+
+	// If the offset is non-zero, then it is required to be divisible by memRequirements.alignment.
+	ok = vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+	assert(ok == VK_SUCCESS);
+
+	void* data;
+	// This function allows us to access a region of the specified memory resource defined by an offset and size.
+	ok = vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+	assert(ok == VK_SUCCESS);
+
+	memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+
+	vkUnmapMemory(device, vertexBufferMemory);
+}
+
+
+uint32_t HelloTriangleApplication::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
+{
+	VkMemoryRequirements memRequirements;
+	vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+	VkPhysicalDeviceMemoryProperties memProperties;
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+	for (uint32_t iMemType = 0; iMemType < memProperties.memoryTypeCount; iMemType++)
+	{
+		if (typeFilter & (1 << iMemType) && (memProperties.memoryTypes[iMemType].propertyFlags & properties) == properties)
+		{
+			return iMemType;
+		}
+	}
+
+	VkMemoryAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = memRequirements.size;
+	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	assert(false); // not supposed to happen
+	return 0;
+}
+
+
 void HelloTriangleApplication::createRenderPass()
 {
 	VkAttachmentDescription colorAttachment{};
@@ -1171,7 +1294,12 @@ void HelloTriangleApplication::createCommandBuffers()
 
 		vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-		vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+		VkBuffer vertexBuffers[] = { vertexBuffer };
+		VkDeviceSize offsets[] = { 0 };
+		vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
+
+		vkCmdDraw(commandBuffers[i], static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+
 
 		vkCmdEndRenderPass(commandBuffers[i]);
 
@@ -1302,6 +1430,8 @@ void HelloTriangleApplication::initVulkan()
 
 	createCommandPool();
 
+	createVertexBuffer();
+
 	createCommandBuffers();
 
 	createSyncObjects();
@@ -1420,6 +1550,9 @@ void HelloTriangleApplication::cleanup()
 	vkDeviceWaitIdle(device);
 
 	cleanupSwapChain();
+
+	vkDestroyBuffer(device, vertexBuffer, nullptr);
+	vkFreeMemory(device, vertexBufferMemory, nullptr);
 
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
