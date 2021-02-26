@@ -207,8 +207,11 @@ private:
 
 	VkShaderModule	createShaderModule(const std::vector<char>& bytecode);
 
-	void createVertexBuffer();
+	void	createVertexBuffer();
 
+	void	createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
+
+	void	copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 	void	createRenderPass();
 
@@ -1075,8 +1078,6 @@ void HelloTriangleApplication::createFramebuffers()
 
 		VkResult ok = vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]);
 		assert(ok == VK_SUCCESS);
-
-
 	}
 }
 
@@ -1121,52 +1122,106 @@ VkShaderModule HelloTriangleApplication::createShaderModule(const std::vector<ch
 
 void HelloTriangleApplication::createVertexBuffer()
 {
+	VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingBufferMemory;
+	createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+	void* data;
+	VkResult ok = vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+	assert(ok == VK_SUCCESS);
+	memcpy(data, vertices.data(), (size_t)bufferSize);
+	vkUnmapMemory(device, stagingBufferMemory);
+
+	createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+
+	copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+
+	vkDestroyBuffer(device, stagingBuffer, nullptr);
+	vkFreeMemory(device, stagingBufferMemory, nullptr);
+}
+
+
+void HelloTriangleApplication::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory)
+{
 	VkBufferCreateInfo bufferInfo{};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bufferInfo.size = sizeof(vertices[0]) * vertices.size();
-	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-
-	// Just like the images in the swap chain, buffers can also be owned by a specific queue family
-	// or be shared between multiple at the same time.
-	// The buffer will only be used from the graphics queue, so we can stick to exclusive access.
+	bufferInfo.size = size;
+	bufferInfo.usage = usage;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	bufferInfo.flags = 0; //  used to configure sparse buffer memory, which is not relevant right now.
-
-	VkResult ok = vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer);
+	VkResult ok = vkCreateBuffer(device, &bufferInfo, nullptr, &buffer);
 	assert(ok == VK_SUCCESS);
 
+
 	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+	vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
 
 	VkMemoryAllocateInfo allocInfo{};
 	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
-	ok = vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory);
+	ok = vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory);
 	assert(ok == VK_SUCCESS);
 
-	// If the offset is non-zero, then it is required to be divisible by memRequirements.alignment.
-	ok = vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
-	assert(ok == VK_SUCCESS);
 
-	void* data;
-	// This function allows us to access a region of the specified memory resource defined by an offset and size.
-	ok = vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-	assert(ok == VK_SUCCESS);
+	vkBindBufferMemory(device, buffer, bufferMemory, 0);
+}
 
-	memcpy(data, vertices.data(), (size_t)bufferInfo.size);
 
-	vkUnmapMemory(device, vertexBufferMemory);
+void HelloTriangleApplication::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+	// TODO: You may wish to create a separate command pool for these kinds of short-lived buffers,
+	// because the implementation may be able to apply memory allocation optimizations.
+	// You should use the VK_COMMAND_POOL_CREATE_TRANSIENT_BIT flag during command pool generation in that case.
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandPool = commandPool;
+	allocInfo.commandBufferCount = 1;
+
+	VkCommandBuffer commandBuffer;
+	vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	// We're only going to use the command buffer once and wait with returning from the function until the copy operation has finished executing.
+	// It's good practice to tell the driver about our intent using VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT.
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+	VkBufferCopy copyRegion{};
+	copyRegion.srcOffset = 0; // Optional
+	copyRegion.dstOffset = 0; // Optional
+	copyRegion.size = size;
+	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+	vkEndCommandBuffer(commandBuffer);
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+
+	vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+
+	// TODO:
+	// We could use a fence and wait with vkWaitForFences,
+	// or simply wait for the transfer queue to become idle with vkQueueWaitIdle.
+	// A fence would allow you to schedule multiple transfers simultaneously and wait for all of them complete,
+	// instead of executing one at a time. That may give the driver more opportunities to optimize.
+	vkQueueWaitIdle(graphicsQueue);
+
+	vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+
 }
 
 
 uint32_t HelloTriangleApplication::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
-	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
-
 	VkPhysicalDeviceMemoryProperties memProperties;
 	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
 
@@ -1177,11 +1232,6 @@ uint32_t HelloTriangleApplication::findMemoryType(uint32_t typeFilter, VkMemoryP
 			return iMemType;
 		}
 	}
-
-	VkMemoryAllocateInfo allocInfo{};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 	assert(false); // not supposed to happen
 	return 0;
@@ -1511,7 +1561,7 @@ void HelloTriangleApplication::drawFrame()
 	// to ensure the semaphores are in a consistent state, otherwise a signalled semaphore may never be properly waited upon.
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized)
 	{
-  		std::cout << "Swap chain out of date or suboptimal - recreation in progress\n";
+		std::cout << "Swap chain out of date or suboptimal - recreation in progress\n";
 		recreateSwapChain();
 	}
 	else
