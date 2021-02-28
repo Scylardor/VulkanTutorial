@@ -243,8 +243,17 @@ private:
 	void createSyncObjects();
 
 	void createTextureImage();
+
+	void createTextureImageView();
+
+	void createTextureSampler();
+
 	void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
+
+	VkImageView	createImageView(VkImage image, VkFormat format);
+
 	void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
 
 	void recreateSwapChain();
 	void cleanupSwapChain();
@@ -347,8 +356,11 @@ private:
 	std::vector<VkDeviceMemory> uniformBuffersMemory;
 
 
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
+	VkImage			textureImage;
+	VkDeviceMemory	textureImageMemory;
+	VkImageView		textureImageView;
+
+	VkSampler		textureSampler;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
@@ -965,35 +977,7 @@ void HelloTriangleApplication::createImageViews()
 
 	for (VkImage& swapImage : swapChainImages)
 	{
-		VkImageViewCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		createInfo.image = swapImage;
-
-		createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		createInfo.format = swapChainImageFormat;
-
-		createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-		// The subresourceRange field describes what the image's purpose is
-		// and which part of the image should be accessed.
-		// Our images will be used as color targets without any mipmapping levels or multiple layers.
-		createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		createInfo.subresourceRange.baseMipLevel = 0;
-		createInfo.subresourceRange.levelCount = 1;
-
-		// If you were working on a stereographic 3D application,
-		// then you would create a swap chain with multiple layers.
-		// You could then create multiple image views for each image
-		// representing the views for the left and right eyes by accessing different layers.
-		createInfo.subresourceRange.baseArrayLayer = 0;
-		createInfo.subresourceRange.layerCount = 1;
-
-		VkResult ok = vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[imgIndex]);
-		assert(ok == VK_SUCCESS);
-
+		swapChainImageViews[imgIndex] = createImageView(swapImage, swapChainImageFormat);
 		imgIndex++;
 	}
 }
@@ -1704,8 +1688,62 @@ void HelloTriangleApplication::createTextureImage()
 }
 
 
+void HelloTriangleApplication::createTextureImageView()
+{
+	textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB);
+}
+
+
+void HelloTriangleApplication::createTextureSampler()
+{
+	VkSamplerCreateInfo samplerInfo{};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+
+	// the repeat mode is probably the most common mode, because it can be used to tile textures like floors and walls.
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+
+	// There is no reason not to use this unless performance is a concern.
+	// Instead of enforcing the availability of anisotropic filtering, it's also possible to simply not use it by conditionally setting:
+	//		samplerInfo.anisotropyEnable = VK_FALSE;
+	//		samplerInfo.maxAnisotropy = 1.0f;
+	samplerInfo.anisotropyEnable = VK_TRUE;
+
+	// The maxAnisotropy field limits the amount of texel samples that can be used to calculate the final color.
+	// A lower value results in better performance, but lower quality results.
+	// To figure out which value we can use, we need to retrieve the properties of the physical device.
+	// TODO: refactor this...
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+
+	// The borderColor field specifies which color is returned when sampling beyond the image with clamp to border addressing mode.
+	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+	// the texels are addressed using the [0, 1) range on all axes.
+	samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+	// This is mainly used for percentage-closer filtering on shadow maps.
+	samplerInfo.compareEnable = VK_FALSE;
+	samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+
+	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerInfo.mipLodBias = 0.0f;
+	samplerInfo.minLod = 0.0f;
+	samplerInfo.maxLod = 0.0f;
+
+	VkResult ok = vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler);
+	assert(ok == VK_SUCCESS);
+
+
+}
+
+
 void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
-	VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
+                                           VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory)
 {
 
 	VkImageCreateInfo imageInfo{};
@@ -1761,6 +1799,27 @@ void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, VkFo
 	assert(ok == VK_SUCCESS);
 
 	vkBindImageMemory(device, textureImage, textureImageMemory, 0);
+}
+
+
+VkImageView HelloTriangleApplication::createImageView(VkImage image, VkFormat format)
+{
+	VkImageViewCreateInfo viewInfo{};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	viewInfo.format = format;
+	viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	viewInfo.subresourceRange.baseMipLevel = 0;
+	viewInfo.subresourceRange.levelCount = 1;
+	viewInfo.subresourceRange.baseArrayLayer = 0;
+	viewInfo.subresourceRange.layerCount = 1;
+
+	VkImageView imageView;
+	VkResult ok = vkCreateImageView(device, &viewInfo, nullptr, &imageView);
+	assert(ok == VK_SUCCESS);
+
+	return imageView;
 }
 
 
@@ -1939,6 +1998,8 @@ void HelloTriangleApplication::initVulkan()
 
 	createTextureImage();
 
+	createTextureImageView();
+
 	createVertexBuffer();
 
 	createIndexBuffer();
@@ -2070,6 +2131,9 @@ void HelloTriangleApplication::cleanup()
 
 	cleanupSwapChain();
 
+	vkDestroySampler(device, textureSampler, nullptr);
+
+	vkDestroyImageView(device, textureImageView, nullptr);
 
 	vkDestroyImage(device, textureImage, nullptr);
 	vkFreeMemory(device, textureImageMemory, nullptr);
