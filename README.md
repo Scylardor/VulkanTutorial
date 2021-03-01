@@ -11,3 +11,4 @@ Also, I completely removed any exceptions from the code and replaced them with g
 
 Finally, there are also a lot of TODOs to remind me that a lot of things in this tutorial code can definitely be improved in the long run (it can't be used as is).
 
+![Viking Room](viking.jpg)
