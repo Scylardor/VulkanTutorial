@@ -8,6 +8,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
 #include <array>
 #include <fstream>
 #include <chrono>
@@ -15,9 +18,14 @@
 #include <optional>
 #include <set>
 #include <vector>
+#include <unordered_map>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
 
 
 int main1() {
@@ -57,6 +65,9 @@ int main1() {
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
+const std::string MODEL_PATH = "assets/models/viking_room.obj";
+const std::string TEXTURE_PATH = "assets/textures/viking_room.png";
+
 struct Vertex
 {
 	glm::vec3 pos;
@@ -95,7 +106,24 @@ struct Vertex
 
 		return attributeDescriptions;
 	}
+
+	bool operator==(const Vertex& other) const
+	{
+		return pos == other.pos && color == other.color && texCoord == other.texCoord;
+	}
 };
+
+namespace std
+{
+	template<> struct hash<Vertex>
+	{
+		size_t operator()(Vertex const& vertex) const {
+			return ((hash<glm::vec3>()(vertex.pos) ^
+				(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+				(hash<glm::vec2>()(vertex.texCoord) << 1);
+		}
+	};
+}
 
 
 const std::vector<const char*> validationLayers = {
@@ -228,6 +256,8 @@ private:
 
 	void	createIndexBuffer();
 
+	void	loadModel();
+
 	void	createUniformBuffers();
 
 	void	updateUniformBuffer(uint32_t currentImage);
@@ -332,25 +362,14 @@ private:
 	bool framebufferResized = false;
 	bool minimized = false;
 
-	const std::vector<Vertex> vertices =
-	{
-		{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-		{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
 
-		{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-		{{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-		{{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-		{{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-	};
+	VkBuffer vertexBuffer;
+	VkDeviceMemory vertexBufferMemory;
 
-	const std::vector<uint16_t> indices =
-	{
-		0, 1, 2, 2, 3, 0,
-		4, 5, 6, 6, 7, 4
-	};
-
+	VkBuffer indexBuffer;
+	VkDeviceMemory indexBufferMemory;
 
 	struct UniformBufferObject
 	{
@@ -358,14 +377,6 @@ private:
 		glm::mat4 view;
 		glm::mat4 proj;
 	};
-
-
-
-	VkBuffer vertexBuffer;
-	VkDeviceMemory vertexBufferMemory;
-
-	VkBuffer indexBuffer;
-	VkDeviceMemory indexBufferMemory;
 
 	std::vector<VkBuffer> uniformBuffers;
 	std::vector<VkDeviceMemory> uniformBuffersMemory;
@@ -1411,6 +1422,54 @@ void HelloTriangleApplication::createIndexBuffer()
 }
 
 
+void HelloTriangleApplication::loadModel()
+{
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string warn, err;
+
+	bool ok = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str());
+	assert(ok);
+
+	for (const auto& shape : shapes)
+	{
+		vertices.reserve(vertices.size() + shape.mesh.indices.size());
+		indices.reserve(indices.size() + shape.mesh.indices.size());
+
+
+		std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+		for (const auto& index : shape.mesh.indices)
+		{
+			Vertex vertex{};
+			vertex.pos = {
+				attrib.vertices[3 * index.vertex_index + 0],
+				attrib.vertices[3 * index.vertex_index + 1],
+				attrib.vertices[3 * index.vertex_index + 2]
+			};
+
+			vertex.texCoord = {
+				attrib.texcoords[2 * index.texcoord_index + 0],
+				attrib.texcoords[2 * index.texcoord_index + 1]
+			};
+
+			vertex.color = { 1.0f, 1.0f, 1.0f };
+
+
+			auto [uniqueVertIdx, inserted] = uniqueVertices.insert({ vertex, (uint32_t)vertices.size() });
+
+			if (inserted)
+			{
+				vertices.push_back(vertex);
+			}
+
+			indices.push_back(uniqueVertIdx->second);
+		}
+	}
+}
+
+
 void HelloTriangleApplication::createUniformBuffers()
 {
 	VkDeviceSize bufferSize = sizeof(UniformBufferObject);
@@ -1675,7 +1734,7 @@ void HelloTriangleApplication::createCommandBuffers()
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
 
-		vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
 		vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, nullptr);
 
@@ -1724,10 +1783,14 @@ void HelloTriangleApplication::createSyncObjects()
 
 void HelloTriangleApplication::createTextureImage()
 {
+	// The OBJ format assumes a coordinate system where a vertical coordinate of 0 means the bottom of the image,
+	// however we've uploaded our image into Vulkan in a top to bottom orientation where 0 means the top of the image.
+	stbi_set_flip_vertically_on_load(true); // TODO: refactor elsewhere...
+
 	int texWidth, texHeight, texChannels;
 	// The STBI_rgb_alpha value forces the image to be loaded with an alpha channel,
 	// even if it doesn't have one, which is nice for consistency with other textures in the future.
-	stbi_uc* pixels = stbi_load("assets/textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+	stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 	VkDeviceSize imageSize = texWidth * texHeight * 4;
 
 	assert(pixels != nullptr);
@@ -2155,6 +2218,8 @@ void HelloTriangleApplication::initVulkan()
 	createTextureImageView();
 
 	createTextureSampler();
+
+	loadModel();
 
 	createVertexBuffer();
 
